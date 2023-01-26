@@ -1,0 +1,609 @@
+---
+title: "Heart Failure Prediction"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r}
+library(naniar)
+library(ggplot2)
+library(ggcorrplot)
+library(DMwR2)
+library(caret)
+library(tidyverse)
+library(cowplot)
+library(pROC)
+library(ROCR)
+library(class)
+library(gmodels)
+library(rpart);library(rpart.plot)
+```
+
+
+```{r}
+heartfailure = read.csv("heart_failure.csv")
+head(heartfailure)
+miss_scan_count(data = heartfailure , search = list("N/A", "Unknown"))
+dim(heartfailure)
+```
+
+#Correlation
+```{r}
+heartfailure.cor = cor(heartfailure)
+```
+
+```{r}
+plot(heartfailure)
+```
+
+
+```{r}
+ggcorrplot(heartfailure.cor,colors = c("#6D9EC1", "white", "#E46726"),type = "lower",title = "Heatmap of Correlation",insig = "blank",digits = 2, tl.cex=8,lab = TRUE,lab_size = 2) 
+```
+```{r}
+for (i in 1:length(heartfailure$age)) {
+  heartfailure$sexnsmoking[i] = (heartfailure$sex[i]+1) * (heartfailure$smoking[i]+3)
+}
+
+for (a in 1:length(heartfailure$age)) {
+  if (heartfailure$sexnsmoking[a] == 3){
+    heartfailure$sexnsmoking[a] = 0
+  } else if (heartfailure$sexnsmoking[a] == 4){
+    heartfailure$sexnsmoking[a] = 1
+  } else if (heartfailure$sexnsmoking[a] == 6){
+    heartfailure$sexnsmoking[a] = 2
+  } else if (heartfailure$sexnsmoking[a] == 8){
+    heartfailure$sexnsmoking[a] = 3
+  } 
+}
+
+head(heartfailure)
+```
+
+
+```{r}
+heartfailure$DEATH_EVENT = as.factor(heartfailure$DEATH_EVENT)
+heartfailure$anaemia = as.factor(heartfailure$anaemia)
+heartfailure$diabetes = as.factor(heartfailure$diabetes)
+heartfailure$high_blood_pressure = as.factor(heartfailure$high_blood_pressure)
+heartfailure$sex = as.factor(heartfailure$sex)
+heartfailure$smoking = as.factor(heartfailure$smoking)
+heartfailure$sexnsmoking = as.factor(heartfailure$sexnsmoking)
+str(heartfailure)
+```
+
+```{r}
+summary(heartfailure)
+```
+
+```{r}
+ggplot(heartfailure, aes(x=DEATH_EVENT, fill=DEATH_EVENT)) + geom_bar(width=.5, stat="count") + scale_x_discrete(labels = c("No","Yes"))+ ggtitle("Respond of Death")
+```
+#remove outlier by Cook Distance
+```{r}
+mod = glm(DEATH_EVENT~age+anaemia+creatinine_phosphokinase+diabetes+ejection_fraction+high_blood_pressure+platelets+serum_creatinine+serum_sodium+sex+smoking+time,data = heartfailure,family=binomial)
+cooksd = cooks.distance(mod)
+```
+
+```{r}
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  
+abline(h = 4*mean(cooksd, na.rm=T), col="red")  	
+text(x=1:length(cooksd)+1,y=cooksd,labels=ifelse(cooksd>4*mean(cooksd,na.rm=T),names(cooksd),""), col="red")
+```
+```{r}
+heartfailure = heartfailure[c(-229,-218,-135,-132),]
+```
+
+#Logistic with Cross Valition 
+```{r}
+#N = length(heartfailure$age)  
+#ind = sample(2,N,replace=TRUE,prob=c(0.7,0.3))
+#train = heartfailure[ind==1,]
+#test = heartfailure[ind==2,]
+```
+
+
+```{r}
+set.seed(827)
+folds = createFolds(y=heartfailure$DEATH_EVENT,k=10)
+max=0
+times=0
+```
+
+```{r}
+set.seed(827)
+logdf <- data.frame(index = runif(10), Acctest = rnorm(10), Acctrain = rnorm(10))
+for(i in 1:10){
+  logdf$index[i] = i
+  train <- heartfailure[-folds[[i]],]
+  test <- heartfailure[folds[[i]],] 
+  fit.logit =  glm(DEATH_EVENT~.,family=binomial,data=train)
+  fit.step=step(fit.logit,direction = "both")
+  fold_predict <- predict(fit.step,type='response',newdata=test)
+  fold_predict =ifelse(fold_predict>0.5,1,0)
+  test$predict = fold_predict #glm.testing.probs
+  
+  logitstep.pred=factor(fold_predict>0.5,levels = c(FALSE,TRUE),labels = c('0','1'))
+  logitstep.perf=table(test$DEATH_EVENT,logitstep.pred,dnn = c("Actual",'Predicted'))
+  logitstep.perf
+  
+  
+  
+  
+  
+  num = 0
+   for (k in 1:length(test$age)) {
+     if ((as.numeric(test$DEATH_EVENT[k])-1) == as.numeric(test$predict[k])){
+       num = num
+     }  else {
+      num = num+1
+      }
+    }
+  fold_accuracy = (nrow(test)-num)/nrow(test) 
+  logdf$Acctest[i] = fold_accuracy
+  actual.testing = test$DEATH_EVENT
+  
+  
+  
+  fold_predict2 <- predict( fit.step,type='response',newdata=train)
+  fold_predict2 =ifelse(fold_predict2>0.5,1,0)
+  train$predict = fold_predict2
+  num2 = 0
+    for (j in 1:length(train$age)) {
+      if ((as.numeric(train$DEATH_EVENT[j])-1) == as.numeric(train$predict[j])){
+        num2 = num2
+        }  else {
+          num2 = num2+1
+          } 
+    }
+  fold_accuracy2 = (nrow(train)-num2)/nrow(train) 
+  logdf$Acctrain[i] = fold_accuracy2
+  if(fold_accuracy>max)
+    {
+    max=fold_accuracy  
+    times=i
+    }
+  lr.pred = prediction(test$predict, actual.testing)
+  lr.perf = performance(lr.pred, "tpr", "fpr")
+  plot(lr.perf, colorize=T)
+  print(summary(fit.step))
+}
+
+print(max)
+print(times)
+```
+
+```{r}
+logdf
+mean(logdf$Acctest)
+```
+
+
+```{r}
+plot(x = logdf$index,y=logdf$Acctest,"p",col='red',xlab="index",ylab="Accuracy")
+lines(x = logdf$index,y=logdf$Acctrain,"p",col='blue')
+```
+
+#LDA
+```{r}
+library(MASS)
+```
+
+```{r}
+folds = createFolds(y=heartfailure$DEATH_EVENT,k=10)
+max=0
+times=0
+```
+
+```{r}
+set.seed(827)
+ldadf <- data.frame(index = runif(10), Acctest = rnorm(10), Acctrain = rnorm(10))
+for(i in 1:10){
+  ldadf$index[i] = i
+  train <- heartfailure[-folds[[i]],]
+  test <- heartfailure[folds[[i]],] 
+  lda.model <- lda(DEATH_EVENT~., data = train)
+  fold_predict <- predict(lda.model,newdata=test)
+  fold_predict =ifelse(fold_predict$posterior[,1]>0.5,0,1)
+  test$predict = fold_predict 
+  num = 0
+  for (k in 1:length(test$age)) {
+     if ((as.numeric(test$DEATH_EVENT[k])-1) == as.numeric(test$predict[k])){
+       num = num
+     }  else {
+      num = num+1
+      }
+  }
+  fold_accuracy = (nrow(test)-num)/nrow(test) 
+  ldadf$Acctest[i] = fold_accuracy
+  actual.testing = test$DEATH_EVENT
+  
+  fold_predict2 <- predict(lda.model,,newdata=train)
+  fold_predict2 =ifelse(fold_predict2$posterior[,1]>0.5,0,1)
+  train$predict = fold_predict2
+  num2 = 0
+    for (j in 1:length(train$age)) {
+      if ((as.numeric(train$DEATH_EVENT[j])-1) == as.numeric(train$predict[j])){
+        num2 = num2
+        }  else {
+          num2 = num2+1
+          } 
+    }
+  fold_accuracy2 = (nrow(train)-num2)/nrow(train) 
+  ldadf$Acctrain[i] = fold_accuracy2
+  
+  if (fold_accuracy>max) {
+    max=fold_accuracy  
+    times=i
+    }
+ 
+  lr.pred = prediction(test$predict, actual.testing)
+  lr.perf = performance(lr.pred, "tpr", "fpr")
+  plot(lr.perf, colorize=T)
+
+  
+}
+
+print(max)
+print(times)
+  
+
+
+
+```
+
+```{r}
+ldadf
+mean(ldadf$Acctest)
+```
+
+```{r}
+plot(x = ldadf$index,y=ldadf$Acctest,"p",col='red',xlab="index",ylab="Accuracy")
+lines(x = ldadf$index,y=ldadf$Acctrain,"p",col='blue')
+```
+#QDA
+```{r}
+folds = createFolds(y=heartfailure$DEATH_EVENT,k=10)
+max=0
+times=0
+```
+
+```{r}
+set.seed(827)
+qdadf <- data.frame(index = runif(10), Acctest = rnorm(10), Acctrain = rnorm(10))
+for(i in 1:10){
+  qdadf$index[i] = i
+  train <- heartfailure[-folds[[i]],]
+  test <- heartfailure[folds[[i]],] 
+  qda.model <- qda(DEATH_EVENT~age+anaemia+creatinine_phosphokinase+diabetes+ejection_fraction+high_blood_pressure+platelets+serum_creatinine+serum_sodium+sex+smoking+time, data = heartfailure)
+  fold_predict <- predict(qda.model,newdata=test)
+  fold_predict = ifelse(fold_predict$posterior[,1]>0.5,0,1)
+  test$predict = fold_predict 
+  num = 0
+  for (k in 1:length(test$age)) {
+     if ((as.numeric(test$DEATH_EVENT[k])-1) == as.numeric(test$predict[k])){
+       num = num
+     }  else {
+      num = num+1
+      }
+  }
+  fold_accuracy = (nrow(test)-num)/nrow(test) 
+  qdadf$Acctest[i] = fold_accuracy
+  actual.testing = test$DEATH_EVENT
+  
+  fold_predict2 <- predict(qda.model,,newdata=train)
+  fold_predict2 =ifelse(fold_predict2$posterior[,1]>0.5,0,1)
+  train$predict = fold_predict2
+  num2 = 0
+    for (j in 1:length(train$age)) {
+      if ((as.numeric(train$DEATH_EVENT[j])-1) == as.numeric(train$predict[j])){
+        num2 = num2
+        }  else {
+          num2 = num2+1
+          } 
+    }
+  fold_accuracy2 = (nrow(train)-num2)/nrow(train) 
+  qdadf$Acctrain[i] = fold_accuracy2
+  
+  if (fold_accuracy>max) {
+    max=fold_accuracy  
+    times=i
+    }
+ 
+  lr.pred = prediction(test$predict, actual.testing)
+  lr.perf = performance(lr.pred, "tpr", "fpr")
+  plot(lr.perf, colorize=T)
+
+  
+}
+
+print(max)
+print(times)
+```
+```{r}
+qdadf
+mean(qdadf$Acctest)
+```
+
+```{r}
+plot(x = qdadf$index,y=qdadf$Acctest,"p",col='red',xlab="index",ylab="Accuracy")
+lines(x = qdadf$index,y=qdadf$Acctrain,"p",col='blue')
+```
+
+  
+#KNN
+```{r}
+cols <- colnames(heartfailure)
+new_cols <- c(cols[1:12],cols[14],cols[13])
+heartfailure1 = heartfailure[, new_cols]
+```
+
+```{r}
+head(heartfailure1)
+```
+
+
+```{r}
+hf.knn = heartfailure1
+for (i in seq(13)){
+  if (typeof(hf.knn[,i]) == "numeric"){
+    hf.knn[,i]=scale(hf.knn[,i])
+  }
+  else hf.knn[,i] = scale(as.numeric(as.character(hf.knn[,i])))
+}
+hf.knn1 = hf.knn[,-14]
+summary(hf.knn1)
+```
+
+```{r}
+set.seed(827)
+random_sample = createDataPartition(hf.knn1$age,p = 0.7,list = FALSE)
+train = hf.knn1[random_sample, ]
+validate = hf.knn1[-random_sample, ]
+train_labels = hf.knn[random_sample, 14] 
+validate_labels = hf.knn[-random_sample, 14]
+```
+
+
+```{r}
+train %>%	
+  cbind(train_labels) %>% 	
+  rename(class = train_labels) %>% 	
+  mutate(value = 1) %>%	
+  group_by(class) %>%	
+  summarise(total = sum(value))->train_stat	
+```
+
+```{r}
+validate %>%	
+  cbind(validate_labels) %>%	
+  rename(class = validate_labels) %>% 	
+  mutate(value = 1) %>%	
+  group_by(class) %>%	
+  summarise(total = sum(value))->validate_stat
+```
+
+```{r}
+knn.pred = knn(train = train,test = validate,	cl = train_labels,	k = 30) 
+CrossTable(x = validate_labels,	y = knn.pred,	dnn = c("Actual", "Predicted"),	prop.chisq = FALSE)
+```
+
+```{r}
+set.seed(827) 
+grid = expand.grid(.k = seq(2, 20, by = 1))	
+control = trainControl(method = "cv")	
+validate %>%	
+  cbind(validate_labels) %>%	
+  rename(class = validate_labels)->train	
+knn.train = train(class~.,data = train,method = "knn",trControl = control,tuneGrid = grid)	
+knn.train
+```
+```{r}
+plot(c(2:20),knn.train$results$Accuracy,'b',xlab="k",ylab = "Accuracy")
+```
+
+#Unsupervised
+```{r}
+heartfailure.pca = read.csv("heart_failure.csv")
+heartfailure.pca = heartfailure.pca[,-13]
+pr.out <- prcomp(heartfailure.pca, scale = TRUE)
+pr.out$rotation
+```
+
+
+```{r}
+head(pr.out$x)
+```
+
+```{r}
+biplot(pr.out, scale = 1)
+```
+
+```{r}
+var_explained = pr.out$sdev^2 / sum(pr.out$sdev^2)
+qplot(c(1:12),var_explained) + geom_line() + xlab("Principal Component") + ylab("Variance Explained") +ggtitle("Scree Plot") +ylim(0, 1)
+```
+```{r}
+pr.out$sdev^2 / sum(pr.out$sdev^2)
+
+```
+
+```{r}
+Cols <- function(vec) {
+  cols <- rainbow(length(unique(vec)))
+   return(cols[as.numeric(as.factor(vec))]) 
+}
+```
+
+#K MEANS
+```{r}
+k2 <- kmeans(hf.knn1, centers = 2, nstart = 25)
+k2
+```
+```{r}
+library(ellipse)
+library(factoextra)
+library(cluster)
+library(caTools)
+```
+```{r}
+fviz_cluster(k2, data = hf.knn1)
+```
+
+
+#Decision tree
+```{r}
+set.seed(827)
+N = length(heartfailure$age)  
+ind = sample(2,N,replace=TRUE,prob=c(0.7,0.3))
+train = heartfailure[ind==1,]
+test = heartfailure[ind==2,]
+```
+
+```{r}
+model.dt.train = rpart(DEATH_EVENT~., data=train)
+rpart.plot(model.dt.train)
+```
+
+```{r}
+dt.test.prob = predict(model.dt.train, newdata=test)
+dt.test.pred = dt.test.prob[,2]>0.5
+result.dt.test = table(test$DEATH_EVENT, dt.test.pred)
+result.dt.test
+(result.dt.test[1,1]+result.dt.test[2,2])/sum(result.dt.test)
+```
+```{r}
+model.dt.train= rpart(DEATH_EVENT~., data=train,minsplit=25, maxdepth=5)
+rpart.plot(model.dt.train)
+```
+
+```{r}
+dt.train.prob = predict(model.dt.train, newdata=train)
+dt.train.pred = dt.train.prob[,2]>0.7
+result.dt.train = table(train$DEATH_EVENT, dt.train.pred)
+result.dt.train
+(result.dt.train[1,1]+result.dt.train[2,2])/sum(result.dt.train)
+```
+
+```{r}
+dt.test.prob = predict(model.dt.train, newdata=test)
+dt.test.pred = dt.test.prob[,2]>0.5
+result.dt.test = table(test$DEATH_EVENT, dt.test.pred)
+result.dt.test
+(result.dt.test[1,1]+result.dt.test[2,2])/sum(result.dt.test)
+```
+
+```{r}
+dt.pred = prediction(dt.test.prob[,2], test$DEATH_EVENT)
+dt.perf = performance(dt.pred, "tpr", "fpr")
+plot(dt.perf, colorize=T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Random Forest
+```{r}
+library(randomForest)
+```
+
+```{r}
+model.rf = train(DEATH_EVENT ~., data = train, method = 'rf',trControl = trainControl(method = 'cv', number = 5)) 
+model.rf
+```
+
+#Feature Importancy
+```{r}
+rf.imp = varImp(model.rf)
+rf.imp
+df = data.frame(rf.imp[1])
+ggplot(data = df, aes(x=reorder(rownames(df),Overall), y=Overall)) + geom_bar(stat="identity",width=0.7, fill="#F8766D") +coord_flip() +ggtitle("Feature Importancy")+ylab("Importance Score")+ xlab("Features")
+
+```
+```{r}
+rf.testing.pred <- predict(model.rf, newdata = test)
+result.rf.testing = table(test$DEATH_EVENT,rf.testing.pred)
+result.rf.testing
+sum(result.rf.testing[2,2],result.rf.testing[1,1])/sum(result.rf.testing)
+```
+
+
+
+```{r}
+set.seed(2)
+ind = sample(2,nrow(heartfailure),replace = TRUE,prob = c(0.7,0.3))
+trainset = heartfailure[ind == 1,]
+testset = heartfailure[ind == 2,]
+```
+
+```{r}
+trainset
+```
+
+
+```{r}
+library(neuralnet)
+```
+
+```{r}
+trainset$no = trainset$DEATH_EVENT == "0"
+trainset$Yes = trainset$DEATH_EVENT == "1"
+```
+
+```{r}
+trainset$no 
+```
+```{r}
+trainset
+```
+```{r}
+trainset$anaemia = as.numeric(trainset$anaemia)
+trainset$diabetes = as.numeric(trainset$diabetes)
+trainset$high_blood_pressure= as.numeric(trainset$high_blood_pressure)
+trainset$sex = as.numeric(trainset$sex)
+trainset$smoking= as.numeric(trainset$smoking)
+```
+
+```{r}
+network = neuralnet(no+Yes~age+anaemia+creatinine_phosphokinase+diabetes+ejection_fraction+high_blood_pressure+platelets+serum_creatinine+serum_sodium+sex+smoking+time,trainset,hidden = 2)
+```
+
+```{r}
+plot(network)
+```
+
+
+
+
+
+
+
+
